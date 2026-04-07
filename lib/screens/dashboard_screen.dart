@@ -7,6 +7,7 @@ import '../services/auth_service.dart';
 import 'login_screen.dart';
 import 'ph_history_screen.dart';
 import 'feeding_history_screen.dart';
+import 'jadwal_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -25,11 +26,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   String _errorMessage = '';
 
   // ── Feed Button State ──────────────────────────────────────────────────────
-  // True saat sedang mengirim komando ke ESP32
   bool _isSendingCommand = false;
-  // True setelah komando terkirim, menunggu status_ikan == 'ikan kenyang'
   bool _isWaitingForSatiated = false;
-  // Polling timer untuk cek status_ikan
   Timer? _satiatedPollingTimer;
 
   late AnimationController _fadeController;
@@ -80,8 +78,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         });
         _fadeController.forward();
 
-        // Cek apakah ikan sudah kenyang saat app dibuka,
-        // agar tombol tidak terkunci jika sebelumnya app di-kill saat menunggu.
         if (info != null) {
           _checkCurrentSatiatedStatus(info['id_kolam'] as int);
         }
@@ -96,7 +92,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
-  /// Cek status_ikan saat ini — dipakai saat init & saat polling.
   Future<void> _checkCurrentSatiatedStatus(int idKolam) async {
     try {
       final session = await _dashboardService.getSesiPakanTerakhir(idKolam);
@@ -110,12 +105,9 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (statusIkan == 'ikan kenyang') {
         _onIkanKenyang();
       }
-    } catch (_) {
-      // Polling error diabaikan, coba lagi di iterasi berikutnya
-    }
+    } catch (_) {}
   }
 
-  /// Dipanggil saat status_ikan == 'ikan kenyang' terdeteksi.
   void _onIkanKenyang() {
     _satiatedPollingTimer?.cancel();
     if (mounted) {
@@ -139,7 +131,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
-  /// Mulai polling setiap 15 detik untuk cek status_ikan.
   void _startSatiatedPolling(int idKolam) {
     _satiatedPollingTimer?.cancel();
     _satiatedPollingTimer = Timer.periodic(
@@ -159,23 +150,20 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   Future<void> _eksekusiPakanManual(int idKolam) async {
-    // Jangan proses jika sedang mengirim atau menunggu kenyang
     if (_isSendingCommand || _isWaitingForSatiated) return;
 
     setState(() => _isSendingCommand = true);
 
     try {
-      await _dashboardService.triggerPakanManual(idKolam);
+      await _dashboardService.triggerPakanManual();
 
       if (!mounted) return;
 
-      // Komando berhasil → masuk mode "menunggu ikan kenyang"
       setState(() {
         _isSendingCommand = false;
         _isWaitingForSatiated = true;
       });
 
-      // Mulai polling status_ikan
       _startSatiatedPolling(idKolam);
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -209,8 +197,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   bool _checkSistemOnline(String waktuRekamTerakhir) {
     final lastUpdate = DateTime.parse(waktuRekamTerakhir).toLocal();
-    final difference = DateTime.now().difference(lastUpdate);
-    return difference.inMinutes <= 30;
+    return DateTime.now().difference(lastUpdate).inMinutes <= 30;
   }
 
   void _bukaDetailPh(int idKolam) {
@@ -231,6 +218,23 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
+  void _bukaJadwalPakan() {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (_, anim, __) => const JadwalScreen(),
+        transitionsBuilder: (_, anim, __, child) => SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 1),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+        transitionDuration: const Duration(milliseconds: 380),
+      ),
+    );
+  }
+
   // ── Derived button state ───────────────────────────────────────────────────
   bool get _isButtonDisabled => _isSendingCommand || _isWaitingForSatiated;
 
@@ -240,6 +244,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     return 'BERI PAKAN MANUAL';
   }
 
+  // =========================================================================
+  // BUILD
+  // =========================================================================
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -395,7 +402,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                   const SizedBox(height: 16),
                   _buildTelemetrySection(idKolam),
                   const SizedBox(height: 16),
-                  _buildManualFeedButton(idKolam),
+                  // ── Feed Action Group ──────────────────────────────────
+                  _buildFeedActionGroup(idKolam),
                 ],
               ),
             ),
@@ -405,8 +413,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── AppBar ─────────────────────────────────────────────────────────────────
-
+  // =========================================================================
+  // APP BAR
+  // =========================================================================
   PreferredSizeWidget _buildAppBar(String namaKolam) {
     return AppBar(
       backgroundColor: Colors.white,
@@ -491,8 +500,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── Status Header ──────────────────────────────────────────────────────────
-
+  // =========================================================================
+  // STATUS HEADER
+  // =========================================================================
   Widget _buildStatusHeader(bool isOnline) {
     final color = isOnline ? const Color(0xFF009E83) : const Color(0xFFE63946);
     final statusLabel = isOnline
@@ -510,23 +520,21 @@ class _DashboardScreenState extends State<DashboardScreen>
         children: [
           AnimatedBuilder(
             animation: _pulseAnimation,
-            builder: (context, _) {
-              return Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.3 + (_pulseAnimation.value * 0.7)),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: color.withOpacity(_pulseAnimation.value * 0.4),
-                      blurRadius: 8,
-                      spreadRadius: 2,
-                    ),
-                  ],
-                ),
-              );
-            },
+            builder: (context, _) => Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.3 + (_pulseAnimation.value * 0.7)),
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withOpacity(_pulseAnimation.value * 0.4),
+                    blurRadius: 8,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(width: 12),
           Text(
@@ -562,8 +570,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── pH Section ─────────────────────────────────────────────────────────────
-
+  // =========================================================================
+  // pH SECTION
+  // =========================================================================
   Widget _buildPhRealtimeSection(int idKolam) {
     return StreamBuilder<List<Map<String, dynamic>>>(
       stream: _dashboardService.streamRiwayatPh(idKolam),
@@ -711,16 +720,16 @@ class _DashboardScreenState extends State<DashboardScreen>
                 ),
               ),
               const SizedBox(height: 12),
-              Row(
+              const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.touch_app_outlined,
                     size: 12,
                     color: Color(0xFF4A7A72),
                   ),
-                  const SizedBox(width: 4),
-                  const Text(
+                  SizedBox(width: 4),
+                  Text(
                     'Ketuk untuk melihat histori analitik',
                     style: TextStyle(
                       color: Color(0xFF4A7A72),
@@ -737,8 +746,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── Telemetry Section ──────────────────────────────────────────────────────
-
+  // =========================================================================
+  // TELEMETRY SECTION
+  // =========================================================================
   Widget _buildTelemetrySection(int idKolam) {
     return FutureBuilder<Map<String, dynamic>?>(
       future: _dashboardService.getSesiPakanTerakhir(idKolam),
@@ -750,38 +760,31 @@ class _DashboardScreenState extends State<DashboardScreen>
           return _buildCardWrapper(
             title: 'TELEMETRI FEEDER & AI',
             icon: Icons.router_outlined,
-            child: const _EmptyDataWidget(
-              message: 'Belum ada log sesi pakan.',
-            ),
+            child: const _EmptyDataWidget(message: 'Belum ada log sesi pakan.'),
           );
         }
 
         final session = snapshot.data!;
-        final List telemetri = session['telemetri_feeder'] ?? [];
-        final List visualAi = session['log_visual_ai'] ?? [];
-        final sisaPakan = telemetri.isNotEmpty
-            ? telemetri.first['sisa_pakan_persen']
+        final List tele = session['telemetri_feeder'] ?? [];
+        final List visAi = session['log_visual_ai'] ?? [];
+        final sisaPakan = tele.isNotEmpty
+            ? tele.first['sisa_pakan_persen']
             : '--';
-        final statusIkan = visualAi.isNotEmpty
-            ? visualAi.first['status_ikan']
+        final statusIkan = visAi.isNotEmpty
+            ? visAi.first['status_ikan']
             : 'Tidak ada data kamera';
-        final waktuFormatted = DateFormat('dd MMM yyyy, HH:mm').format(
-          DateTime.parse(session['waktu_mulai']).toLocal(),
-        );
+        final waktuFormatted = DateFormat(
+          'dd MMM yyyy, HH:mm',
+        ).format(DateTime.parse(session['waktu_mulai']).toLocal());
 
         double? sisaPakanNum;
-        if (sisaPakan != '--') {
-          sisaPakanNum = (sisaPakan as num).toDouble();
-        }
+        if (sisaPakan != '--') sisaPakanNum = (sisaPakan as num).toDouble();
         final pakanColor = sisaPakanNum != null && sisaPakanNum < 20
             ? const Color(0xFFE63946)
             : const Color(0xFF009E83);
 
-        // Saat polling aktif: cek apakah status sudah kenyang dari data terbaru
-        final statusLower =
-            (statusIkan as String).toLowerCase();
+        final statusLower = (statusIkan as String).toLowerCase();
         if (_isWaitingForSatiated && statusLower == 'ikan kenyang') {
-          // Jadwalkan update di frame berikutnya agar tidak setState di build
           WidgetsBinding.instance.addPostFrameCallback((_) => _onIkanKenyang());
         }
 
@@ -810,16 +813,16 @@ class _DashboardScreenState extends State<DashboardScreen>
                 value: statusIkan.toUpperCase(),
               ),
               const SizedBox(height: 12),
-              Row(
+              const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.touch_app_outlined,
                     size: 12,
                     color: Color(0xFF4A7A72),
                   ),
-                  const SizedBox(width: 4),
-                  const Text(
+                  SizedBox(width: 4),
+                  Text(
                     'Ketuk untuk melihat log kamera AI',
                     style: TextStyle(
                       color: Color(0xFF4A7A72),
@@ -836,8 +839,53 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── Manual Feed Button ─────────────────────────────────────────────────────
+  // =========================================================================
+  // FEED ACTION GROUP — tombol manual + tombol jadwal
+  // =========================================================================
+  Widget _buildFeedActionGroup(int idKolam) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ── Label section ──
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF009E83),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'KENDALI PAKAN',
+                style: TextStyle(
+                  color: Color(0xFF009E83),
+                  fontSize: 11,
+                  letterSpacing: 2,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
 
+        // ── Tombol Pakan Manual ──
+        _buildManualFeedButton(idKolam),
+        const SizedBox(height: 10),
+
+        // ── Tombol Atur Jadwal ──
+        _buildJadwalButton(),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // MANUAL FEED BUTTON
+  // =========================================================================
   Widget _buildManualFeedButton(int idKolam) {
     final isDisabled = _isButtonDisabled;
 
@@ -874,7 +922,6 @@ class _DashboardScreenState extends State<DashboardScreen>
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Icon / spinner
               if (_isSendingCommand || _isWaitingForSatiated)
                 SizedBox(
                   width: 18,
@@ -893,7 +940,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                   size: 20,
                 ),
               const SizedBox(width: 12),
-              // Label
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
                 child: Text(
@@ -902,8 +948,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                   style: TextStyle(
                     color: isDisabled
                         ? (_isWaitingForSatiated
-                            ? const Color(0xFF009E83)
-                            : const Color(0xFF2E4F48))
+                              ? const Color(0xFF009E83)
+                              : const Color(0xFF2E4F48))
                         : Colors.white,
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
@@ -918,15 +964,21 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  Widget _buildDivider() {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 12),
-      height: 1,
-      color: const Color(0xFFD5E5E2),
-    );
+  // =========================================================================
+  // JADWAL BUTTON
+  // =========================================================================
+  Widget _buildJadwalButton() {
+    return _JadwalButton(onTap: _bukaJadwalPakan);
   }
+
+  // =========================================================================
+  // HELPERS
+  // =========================================================================
+  Widget _buildDivider() => Container(
+    margin: const EdgeInsets.symmetric(vertical: 12),
+    height: 1,
+    color: const Color(0xFFD5E5E2),
+  );
 
   Widget _buildTelemetryRow({
     required IconData icon,
@@ -1112,8 +1164,150 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 }
 
-// ── Helper Widgets ─────────────────────────────────────────────────────────
+// ============================================================================
+// JADWAL BUTTON — stateful untuk press scale + animasi arrow
+// ============================================================================
+class _JadwalButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _JadwalButton({required this.onTap});
 
+  @override
+  State<_JadwalButton> createState() => _JadwalButtonState();
+}
+
+class _JadwalButtonState extends State<_JadwalButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _scale;
+  late Animation<double> _arrowSlide;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 140),
+    );
+    _scale = Tween<double>(
+      begin: 1.0,
+      end: 0.97,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    _arrowSlide = Tween<double>(
+      begin: 0,
+      end: 4,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => _ctrl.forward(),
+      onTapUp: (_) {
+        _ctrl.reverse();
+        widget.onTap();
+      },
+      onTapCancel: () => _ctrl.reverse(),
+      child: ScaleTransition(
+        scale: _scale,
+        child: AnimatedBuilder(
+          animation: _arrowSlide,
+          builder: (_, child) => Container(
+            height: 52,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: const Color(
+                  0xFF009E83,
+                ).withOpacity(0.3 + _ctrl.value * 0.4),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF009E83).withOpacity(0.08),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  // Ikon jadwal
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF009E83).withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: const Color(0xFF009E83).withOpacity(0.2),
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.schedule_rounded,
+                      color: Color(0xFF009E83),
+                      size: 16,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+
+                  // Teks
+                  const Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'ATUR JADWAL OTOMATIS',
+                          style: TextStyle(
+                            color: Color(0xFF009E83),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.5,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Kelola waktu pemberian pakan terjadwal',
+                          style: TextStyle(
+                            color: Color(0xFF4A7A72),
+                            fontSize: 10,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Arrow animasi
+                  Transform.translate(
+                    offset: Offset(_arrowSlide.value, 0),
+                    child: const Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      color: Color(0xFF009E83),
+                      size: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// HELPER WIDGETS
+// ============================================================================
 class _EmptyDataWidget extends StatelessWidget {
   final String message;
   const _EmptyDataWidget({required this.message});
@@ -1136,14 +1330,12 @@ class _EmptyDataWidget extends StatelessWidget {
   }
 }
 
-// Grid background painter — light mode
 class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = const Color(0xFF009E83).withOpacity(0.05)
       ..strokeWidth = 1;
-
     const spacing = 40.0;
     for (double x = 0; x < size.width; x += spacing) {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);

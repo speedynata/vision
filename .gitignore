@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# ==========================================
+# FAKTA INJEKSI: Python / Backend related
+# ==========================================
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
